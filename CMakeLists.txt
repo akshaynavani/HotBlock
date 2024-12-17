@@ -24,6 +24,7 @@ find_package(Threads REQUIRED)
 
 add_library(hotblock
   src/block_device.cc
+  src/block_pool.cc
 )
 target_include_directories(hotblock PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(hotblock PUBLIC Threads::Threads)
