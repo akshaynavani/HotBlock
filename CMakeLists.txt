@@ -12,7 +12,12 @@ endif()
 
 option(HOTBLOCK_BUILD_TESTS "Build the Google Test suites" ON)
 option(HOTBLOCK_BUILD_BENCH "Build the benchmark driver" ON)
-option(HOTBLOCK_SANITIZE "Build with ThreadSanitizer (thread) or AddressSanitizer (address)" "")
+set(HOTBLOCK_SANITIZE "" CACHE STRING "Sanitizer to enable: thread or address (empty = none)")
+
+if(HOTBLOCK_SANITIZE)
+  add_compile_options(-fsanitize=${HOTBLOCK_SANITIZE} -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=${HOTBLOCK_SANITIZE})
+endif()
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -23,13 +28,6 @@ add_library(hotblock
 target_include_directories(hotblock PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(hotblock PUBLIC Threads::Threads)
 target_compile_options(hotblock PRIVATE -Wall -Wextra -Wpedantic)
-
-if(HOTBLOCK_SANITIZE)
-  add_compile_options(-fsanitize=${HOTBLOCK_SANITIZE} -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=${HOTBLOCK_SANITIZE})
-  target_compile_options(hotblock PUBLIC -fsanitize=${HOTBLOCK_SANITIZE} -fno-omit-frame-pointer)
-  target_link_options(hotblock PUBLIC -fsanitize=${HOTBLOCK_SANITIZE})
-endif()
 
 if(HOTBLOCK_BUILD_TESTS)
   include(FetchContent)
