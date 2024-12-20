@@ -48,6 +48,7 @@ if(HOTBLOCK_BUILD_TESTS)
     tests/block_pool_test.cc
     tests/lru_list_test.cc
     tests/block_cache_test.cc
+    tests/eviction_test.cc
   )
   target_link_libraries(hotblock_tests PRIVATE hotblock GTest::gtest_main)
   include(GoogleTest)
