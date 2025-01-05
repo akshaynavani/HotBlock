@@ -381,6 +381,13 @@ Status BlockCache::Sync() {
 }
 
 void BlockCache::Unpin(Entry* e) {
+  // Write-through: persist before dropping the pin so the entry cannot be
+  // evicted mid-write. Best effort; on failure the block stays dirty and is
+  // retried on eviction or the next flush.
+  if (options_.write_policy == WritePolicy::kWriteThrough &&
+      e->dirty.load(std::memory_order_acquire)) {
+    (void)FlushEntry(e);
+  }
   Shard& shard = *e->shard;
   std::lock_guard<std::mutex> lock(shard.mu);
   assert(e->pins > 0);
@@ -408,6 +415,10 @@ Status BlockCache::Write(BlockId id, std::size_t offset, const void* src, std::s
     auto lock = h.WriteLock();
     std::memcpy(h.mutable_data() + offset, src, len);
     h.MarkDirty();
+  }
+  if (options_.write_policy == WritePolicy::kWriteThrough) {
+    // Flush here (rather than in Unpin) so the caller sees I/O errors.
+    return FlushEntry(h.entry_);
   }
   return Status::Ok();
 }
