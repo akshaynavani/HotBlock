@@ -101,6 +101,15 @@ class BlockCache {
   Status Read(BlockId id, std::size_t offset, void* dst, std::size_t len);
   Status Write(BlockId id, std::size_t offset, const void* src, std::size_t len);
 
+  // Writes block `id` to the device if it is resident and dirty.
+  Status Flush(BlockId id);
+  // Writes every dirty resident block to the device. Blocks dirtied while the
+  // flush runs may or may not be included. Returns the first error seen but
+  // keeps flushing the remaining blocks.
+  Status FlushAll();
+  // FlushAll() followed by a device-level Sync() for durability.
+  Status Sync();
+
   // True if `id` is resident (loaded or loading). Does not affect recency.
   bool Contains(BlockId id) const;
 
@@ -123,6 +132,12 @@ class BlockCache {
   void ReleaseEntryLocked(detail::Shard& shard, detail::Entry* e);
 
   void Unpin(detail::Entry* e);
+
+  // Writes a pinned entry to the device if dirty. Takes the entry's data lock
+  // in shared mode, so writers are excluded but readers proceed.
+  Status FlushEntry(detail::Entry* e);
+  // Called on a clean->dirty transition.
+  void OnBlockDirtied();
 
   BlockDevice* const device_;
   const CacheOptions options_;

@@ -127,6 +127,7 @@ void BlockHandle::MarkDirty() {
   assert(valid());
   if (!entry_->dirty.exchange(true, std::memory_order_acq_rel)) {
     cache_->stats_.dirty_blocks.fetch_add(1, std::memory_order_relaxed);
+    cache_->OnBlockDirtied();
   }
 }
 
@@ -170,6 +171,9 @@ BlockCache::BlockCache(BlockDevice* device, const CacheOptions& options)
 }
 
 BlockCache::~BlockCache() {
+  // Do not lose dirty data on shutdown. Errors cannot be reported from a
+  // destructor; callers that care should call Sync() first.
+  (void)FlushAll();
   for (auto& shard : shards_) {
     std::lock_guard<std::mutex> lock(shard->mu);
     for (auto& kv : shard->map) {
@@ -299,6 +303,81 @@ Status BlockCache::Pin(BlockId id, BlockHandle* out) {
     *out = BlockHandle(this, e);
     return Status::Ok();
   }
+}
+
+void BlockCache::OnBlockDirtied() {}
+
+Status BlockCache::FlushEntry(Entry* e) {
+  std::shared_lock<std::shared_mutex> data_lock(e->data_mu);
+  // Clear before writing: a writer cannot run concurrently (we hold the lock
+  // shared), and any write after we release re-dirties the block.
+  if (!e->dirty.exchange(false, std::memory_order_acq_rel)) return Status::Ok();
+  Status s = device_->WriteBlock(e->id, e->frame);
+  if (!s.ok()) {
+    e->dirty.store(true, std::memory_order_release);
+    return s;
+  }
+  stats_.dirty_blocks.fetch_sub(1, std::memory_order_relaxed);
+  detail::AtomicCacheStats::Inc(stats_.writebacks);
+  return Status::Ok();
+}
+
+Status BlockCache::Flush(BlockId id) {
+  if (id >= device_->num_blocks()) {
+    return Status::InvalidArgument("block " + std::to_string(id) + " out of range");
+  }
+  Shard& shard = ShardFor(id);
+  Entry* e = nullptr;
+  {
+    std::unique_lock<std::mutex> lock(shard.mu);
+    for (;;) {
+      auto it = shard.map.find(id);
+      if (it == shard.map.end()) return Status::Ok();  // not resident: nothing to do
+      e = it->second;
+      if (e->state != EntryState::kLoading) break;
+      shard.load_cv.wait(lock);  // a loading block is clean by definition, but wait for it
+    }
+    if (!e->dirty.load(std::memory_order_acquire)) return Status::Ok();
+    if (e->pins == 0) shard.lru.Remove(e);
+    ++e->pins;
+  }
+  Status s = FlushEntry(e);
+  Unpin(e);
+  return s;
+}
+
+Status BlockCache::FlushAll() {
+  Status first_error;
+  std::vector<Entry*> batch;
+  for (auto& shard_ptr : shards_) {
+    Shard& shard = *shard_ptr;
+    batch.clear();
+    {
+      // Pin every dirty entry so it cannot be evicted while we write it.
+      std::lock_guard<std::mutex> lock(shard.mu);
+      for (auto& kv : shard.map) {
+        Entry* e = kv.second;
+        if (e->state != EntryState::kReady || !e->dirty.load(std::memory_order_acquire)) continue;
+        if (e->pins == 0) shard.lru.Remove(e);
+        ++e->pins;
+        batch.push_back(e);
+      }
+    }
+    // Write in block order: friendlier to the device than hash order.
+    std::sort(batch.begin(), batch.end(), [](const Entry* a, const Entry* b) { return a->id < b->id; });
+    for (Entry* e : batch) {
+      Status s = FlushEntry(e);
+      if (!s.ok() && first_error.ok()) first_error = s;
+      Unpin(e);
+    }
+  }
+  return first_error;
+}
+
+Status BlockCache::Sync() {
+  Status s = FlushAll();
+  if (!s.ok()) return s;
+  return device_->Sync();
 }
 
 void BlockCache::Unpin(Entry* e) {
