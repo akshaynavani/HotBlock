@@ -21,6 +21,14 @@ struct CacheOptions {
   std::size_t num_shards = 16;
 
   WritePolicy write_policy = WritePolicy::kWriteBack;
+
+  // Background flusher (write-back only). When enabled, a dedicated pthread
+  // flushes dirty blocks every `flush_interval`, or sooner once the fraction
+  // of dirty frames reaches `flush_dirty_ratio`. Keeps eviction cheap by
+  // making it likely that LRU victims are already clean.
+  bool background_flush = false;
+  std::chrono::milliseconds flush_interval{50};
+  double flush_dirty_ratio = 0.25;
 };
 
 }  // namespace hotblock

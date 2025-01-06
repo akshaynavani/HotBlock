@@ -168,9 +168,16 @@ BlockCache::BlockCache(BlockDevice* device, const CacheOptions& options)
     shard->map.reserve(shard->capacity * 2);
     shards_.push_back(std::move(shard));
   }
+
+  if (options_.background_flush && options_.write_policy == WritePolicy::kWriteBack) {
+    const double ratio = std::clamp(options_.flush_dirty_ratio, 0.0, 1.0);
+    dirty_trigger_ = std::max<std::size_t>(1, static_cast<std::size_t>(ratio * capacity_));
+    flusher_ = std::make_unique<PosixThread>([this] { FlusherLoop(); }, "hotblock-flush");
+  }
 }
 
 BlockCache::~BlockCache() {
+  StopFlusher();
   // Do not lose dirty data on shutdown. Errors cannot be reported from a
   // destructor; callers that care should call Sync() first.
   (void)FlushAll();
@@ -305,7 +312,44 @@ Status BlockCache::Pin(BlockId id, BlockHandle* out) {
   }
 }
 
-void BlockCache::OnBlockDirtied() {}
+void BlockCache::OnBlockDirtied() {
+  if (!flusher_) return;
+  const auto dirty = stats_.dirty_blocks.load(std::memory_order_relaxed);
+  if (dirty >= static_cast<std::int64_t>(dirty_trigger_) &&
+      !flush_requested_.exchange(true, std::memory_order_acq_rel)) {
+    // Take the mutex so the wake-up cannot slip between the flusher checking
+    // its predicate and going to sleep.
+    std::lock_guard<std::mutex> lock(flusher_mu_);
+    flusher_cv_.notify_one();
+  }
+}
+
+void BlockCache::FlusherLoop() {
+  std::unique_lock<std::mutex> lock(flusher_mu_);
+  while (!flusher_stop_) {
+    flusher_cv_.wait_for(lock, options_.flush_interval, [this] {
+      return flusher_stop_ || flush_requested_.load(std::memory_order_acquire);
+    });
+    if (flusher_stop_) break;
+    flush_requested_.store(false, std::memory_order_release);
+    lock.unlock();
+    // Errors are retried on the next pass; dirty blocks stay dirty.
+    (void)FlushAll();
+    detail::AtomicCacheStats::Inc(stats_.flusher_passes);
+    lock.lock();
+  }
+}
+
+void BlockCache::StopFlusher() {
+  if (!flusher_) return;
+  {
+    std::lock_guard<std::mutex> lock(flusher_mu_);
+    flusher_stop_ = true;
+  }
+  flusher_cv_.notify_all();
+  flusher_->Join();
+  flusher_.reset();
+}
 
 Status BlockCache::FlushEntry(Entry* e) {
   std::shared_lock<std::shared_mutex> data_lock(e->data_mu);

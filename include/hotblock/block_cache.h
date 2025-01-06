@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -11,6 +13,7 @@
 #include "hotblock/block_pool.h"
 #include "hotblock/cache_options.h"
 #include "hotblock/cache_stats.h"
+#include "hotblock/posix_thread.h"
 #include "hotblock/types.h"
 
 namespace hotblock {
@@ -136,8 +139,10 @@ class BlockCache {
   // Writes a pinned entry to the device if dirty. Takes the entry's data lock
   // in shared mode, so writers are excluded but readers proceed.
   Status FlushEntry(detail::Entry* e);
-  // Called on a clean->dirty transition.
+  // Called on a clean->dirty transition; may wake the flusher early.
   void OnBlockDirtied();
+  void FlusherLoop();
+  void StopFlusher();
 
   BlockDevice* const device_;
   const CacheOptions options_;
@@ -145,6 +150,14 @@ class BlockCache {
   BlockPool pool_;
   std::vector<std::unique_ptr<detail::Shard>> shards_;
   mutable detail::AtomicCacheStats stats_;
+
+  // Background flusher state.
+  std::mutex flusher_mu_;
+  std::condition_variable flusher_cv_;
+  bool flusher_stop_ = false;                 // guarded by flusher_mu_
+  std::atomic<bool> flush_requested_{false};
+  std::size_t dirty_trigger_ = 0;             // dirty-block count that wakes the flusher
+  std::unique_ptr<PosixThread> flusher_;
 };
 
 }  // namespace hotblock
