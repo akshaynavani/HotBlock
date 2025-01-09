@@ -50,6 +50,7 @@ if(HOTBLOCK_BUILD_TESTS)
     tests/block_cache_test.cc
     tests/eviction_test.cc
     tests/write_back_test.cc
+    tests/concurrency_test.cc
   )
   target_link_libraries(hotblock_tests PRIVATE hotblock GTest::gtest_main)
   include(GoogleTest)
