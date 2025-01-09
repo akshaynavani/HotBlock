@@ -31,6 +31,11 @@ target_include_directories(hotblock PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(hotblock PUBLIC Threads::Threads)
 target_compile_options(hotblock PRIVATE -Wall -Wextra -Wpedantic)
 
+if(HOTBLOCK_BUILD_BENCH)
+  add_executable(hotblock_bench bench/hotblock_bench.cc)
+  target_link_libraries(hotblock_bench PRIVATE hotblock)
+endif()
+
 if(HOTBLOCK_BUILD_TESTS)
   include(FetchContent)
   FetchContent_Declare(
